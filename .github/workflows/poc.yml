@@ -1,0 +1,32 @@
+name: PoC
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Test suggestedFilename
+        run: |
+          cat > poc.swift << 'EOF'
+          import Foundation
+
+          let url = URL(string: "https://example.com/f")!
+          let payloads = [
+              "../../../../../../tmp/pwned.txt",
+              "../escape.bin",
+              "normal.zip",
+              "../../LaunchAgents/evil.plist"
+          ]
+          for p in payloads {
+              let h = ["Content-Disposition": "attachment; filename=\"\(p)\""]
+              let r = HTTPURLResponse(url: url, statusCode: 200,
+                  httpVersion: "HTTP/1.1", headerFields: h)!
+              let name = r.suggestedFilename ?? "nil"
+              let safe = (name as NSString).lastPathComponent
+              print("input: \(p)")
+              print("  suggestedFilename: \(name)")
+              print("  lastPathComponent: \(safe)")
+              print("  VULNERABLE: \(name.contains(".."))")
+              print()
+          }
+          EOF
+          swift poc.swift
